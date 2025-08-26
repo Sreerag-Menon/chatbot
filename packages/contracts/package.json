@@ -1,0 +1,36 @@
+{
+    "name": "@chatbot/contracts",
+    "version": "1.0.0",
+    "description": "Shared contracts and API specifications for the chatbot application",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "build": "npm run generate:types && npm run generate:client",
+        "generate:types": "openapi-typescript openapi.yaml -o dist/types.ts",
+        "generate:client": "openapi-fetch openapi.yaml -o dist/client.ts",
+        "validate": "swagger-codegen validate -i openapi.yaml",
+        "clean": "rm -rf dist",
+        "prebuild": "npm run clean && mkdir -p dist"
+    },
+    "keywords": [
+        "openapi",
+        "typescript",
+        "api",
+        "contracts",
+        "chatbot"
+    ],
+    "author": "Chatbot Team",
+    "license": "MIT",
+    "devDependencies": {
+        "openapi-typescript": "^7.0.0",
+        "openapi-fetch": "^0.8.0",
+        "swagger-codegen": "^3.0.0"
+    },
+    "files": [
+        "dist/",
+        "openapi.yaml"
+    ],
+    "publishConfig": {
+        "access": "restricted"
+    }
+}

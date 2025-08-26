@@ -1,0 +1,91 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'apps/frontend/**'
+      - 'packages/contracts/**'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'apps/frontend/**'
+      - 'packages/contracts/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/frontend/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: apps/frontend
+      run: npm ci
+    
+    - name: Run type checking
+      working-directory: apps/frontend
+      run: npm run type-check
+    
+    - name: Run linting
+      working-directory: apps/frontend
+      run: npm run lint
+    
+    - name: Run tests
+      working-directory: apps/frontend
+      run: npm run test:ci
+    
+    - name: Build application
+      working-directory: apps/frontend
+      run: npm run build
+      env:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/frontend/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: apps/frontend
+      run: npm ci
+    
+    - name: Build Docker image
+      run: |
+        docker build -t chatbot-frontend:latest -f apps/frontend/Dockerfile .
+    
+    - name: Run security audit
+      working-directory: apps/frontend
+      run: npm audit --audit-level moderate
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy to production
+      run: |
+        echo "Deploying frontend to production..."
+        # Add your deployment commands here
+        # Example: kubectl apply -f k8s/frontend/
+        # Example: docker push your-registry/chatbot-frontend:latest
