@@ -1,5 +1,6 @@
 'use client'
 
+import type { EscalatedSession, UserResponse } from '@/lib/types'
 import {
     Activity,
     AlertTriangle,
@@ -29,8 +30,8 @@ interface AnalyticsData {
 }
 
 interface AnalyticsDashboardProps {
-    escalatedSessions: any[]
-    users: any[]
+    escalatedSessions: EscalatedSession[]
+    users: UserResponse[]
 }
 
 export default function AnalyticsDashboard({ escalatedSessions, users }: AnalyticsDashboardProps) {

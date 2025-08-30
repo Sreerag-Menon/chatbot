@@ -14,7 +14,7 @@ import uuid
 from database import init_db, get_db_session
 from models import User, Conversation
 from auth import authenticate_user, create_access_token, get_current_user, require_role
-from schemas import LoginRequest, SignupRequest, Token, UserResponse, UserUpdate
+from schemas import LoginRequest, SignupRequest, Token, UserResponse, UserUpdate, UserCreate, BotTestRequest, BotTestResponse, BotAccuracyTest, BotAccuracyResult, BotValidationRequest
 from groq_client import chat_with_groq, get_confidence_score
 from utils import generate_brief_summary
 
@@ -169,6 +169,33 @@ async def update_user(
         setattr(user, field, value)
     db.commit(); db.refresh(user)
     return user
+
+
+@app.post("/admin/users", response_model=UserResponse)
+async def create_user(
+    new_user: UserCreate,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db_session)
+):
+    """Admin-only: create a new user (employee or admin)."""
+    existing_user = db.query(User).filter(User.email == new_user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+
+    from auth import get_password_hash
+    hashed_password = get_password_hash(new_user.password)
+    db_user = User(
+        email=new_user.email,
+        username=new_user.username,
+        hashed_password=hashed_password,
+        role=new_user.role,
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
 # -----------------------------------------------------------------------------
 # Chat models
@@ -456,6 +483,298 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db_session)):
 
 
 # -----------------------------------------------------------------------------
+# Bot Testing & Validation Endpoints
+# -----------------------------------------------------------------------------
+
+@app.post("/admin/bot/test", response_model=BotTestResponse)
+async def test_bot_response(
+    test_request: BotTestRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db_session)
+):
+    """Admin endpoint to test individual bot responses"""
+    start_time = datetime.now()
+    
+    try:
+        # Create a unique test session ID
+        test_session_id = f"test_{uuid.uuid4().hex[:8]}"
+        
+        # Prepare the message for the bot
+        user_message = test_request.message.strip()
+        
+        # Retrieve context from knowledge base
+        retrieved_docs = retrieve_context(user_message, k=4)
+        context_text = "\n".join([doc.page_content for doc in retrieved_docs])
+        
+        # Build system prompt
+        system_prompt = build_system_prompt(context_text)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Get bot response
+        response = chat_with_groq(messages)
+        bot_reply = response.content.strip()
+        
+        # Calculate confidence score
+        confidence_score = get_confidence_score(bot_reply)
+        bot_reply_clean = bot_reply.replace(f"[CONFIDENCE: {confidence_score}]", "").strip()
+        
+        # Calculate response time
+        end_time = datetime.now()
+        response_time = int((end_time - start_time).total_seconds() * 1000)
+        
+        # Extract context information
+        context_used = [doc.page_content[:100] + "..." for doc in retrieved_docs] if retrieved_docs else []
+        
+        return BotTestResponse(
+            bot_response=bot_reply_clean,
+            confidence_score=float(confidence_score),
+            response_time_ms=response_time,
+            context_used=context_used,
+            retrieved_documents=len(retrieved_docs),
+            test_id=test_session_id,
+            timestamp=end_time
+        )
+        
+    except Exception as e:
+        print(f"[ERROR] Bot test failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Bot test failed: {str(e)}"
+        )
+
+
+@app.post("/admin/bot/accuracy-test", response_model=BotAccuracyResult)
+async def run_accuracy_test(
+    accuracy_test: BotAccuracyTest,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db_session)
+):
+    """Admin endpoint to run comprehensive accuracy tests"""
+    start_time = datetime.now()
+    test_results = []
+    total_confidence = 0.0
+    total_response_time = 0
+    
+    try:
+        for i, test_case in enumerate(accuracy_test.test_cases):
+            case_start_time = datetime.now()
+            
+            # Test individual case
+            user_message = test_case.message.strip()
+            
+            # Retrieve context
+            retrieved_docs = retrieve_context(user_message, k=4)
+            context_text = "\n".join([doc.page_content for doc in retrieved_docs])
+            
+            # Build system prompt
+            system_prompt = build_system_prompt(context_text)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ]
+            
+            # Get bot response
+            response = chat_with_groq(messages)
+            bot_reply = response.content.strip()
+            
+            # Calculate confidence
+            confidence_score = get_confidence_score(bot_reply)
+            bot_reply_clean = bot_reply.replace(f"[CONFIDENCE: {confidence_score}]", "").strip()
+            
+            # Calculate response time
+            case_end_time = datetime.now()
+            response_time = int((case_end_time - case_start_time).total_seconds() * 1000)
+            
+            # Create test result
+            test_result = BotTestResponse(
+                bot_response=bot_reply_clean,
+                confidence_score=float(confidence_score),
+                response_time_ms=response_time,
+                context_used=[doc.page_content[:100] + "..." for doc in retrieved_docs] if retrieved_docs else [],
+                retrieved_documents=len(retrieved_docs),
+                test_id=f"{accuracy_test.test_name}_{i}",
+                timestamp=case_end_time
+            )
+            
+            test_results.append(test_result)
+            total_confidence += float(confidence_score)
+            total_response_time += response_time
+        
+        # Calculate overall metrics
+        total_tests = len(accuracy_test.test_cases)
+        average_confidence = total_confidence / total_tests if total_tests > 0 else 0.0
+        average_response_time = total_response_time / total_tests if total_tests > 0 else 0
+        
+        # Calculate accuracy based on confidence scores
+        passed_tests = sum(1 for result in test_results if result.confidence_score >= 0.6)
+        failed_tests = total_tests - passed_tests
+        accuracy_percentage = (passed_tests / total_tests * 100) if total_tests > 0 else 0.0
+        
+        end_time = datetime.now()
+        
+        return BotAccuracyResult(
+            test_name=accuracy_test.test_name,
+            total_tests=total_tests,
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            average_confidence=average_confidence,
+            average_response_time=average_response_time,
+            accuracy_percentage=accuracy_percentage,
+            detailed_results=test_results,
+            timestamp=end_time
+        )
+        
+    except Exception as e:
+        print(f"[ERROR] Accuracy test failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Accuracy test failed: {str(e)}"
+        )
+
+
+@app.post("/admin/bot/validate", response_model=dict)
+async def validate_bot_response(
+    validation_request: BotValidationRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db_session)
+):
+    """Admin endpoint to validate bot responses against specific criteria"""
+    start_time = datetime.now()
+    
+    try:
+        user_message = validation_request.message.strip()
+        
+        # Retrieve context
+        retrieved_docs = retrieve_context(user_message, k=4)
+        context_text = "\n".join([doc.page_content for doc in retrieved_docs])
+        
+        # Build system prompt
+        system_prompt = build_system_prompt(context_text)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Get bot response
+        response = chat_with_groq(messages)
+        bot_reply = response.content.strip()
+        
+        # Calculate confidence
+        confidence_score = get_confidence_score(bot_reply)
+        bot_reply_clean = bot_reply.replace(f"[CONFIDENCE: {confidence_score}]", "").strip()
+        
+        # Calculate response time
+        end_time = datetime.now()
+        response_time = int((end_time - start_time).total_seconds() * 1000)
+        
+        # Validation results
+        validation_results = {
+            "bot_response": bot_reply_clean,
+            "confidence_score": float(confidence_score),
+            "response_time_ms": response_time,
+            "validation_passed": True,
+            "validation_details": {}
+        }
+        
+        # Check response time
+        if validation_request.max_response_time:
+            time_valid = response_time <= validation_request.max_response_time
+            validation_results["validation_details"]["response_time"] = {
+                "valid": time_valid,
+                "expected_max": validation_request.max_response_time,
+                "actual": response_time
+            }
+            if not time_valid:
+                validation_results["validation_passed"] = False
+        
+        # Check for expected keywords
+        if validation_request.expected_keywords:
+            found_keywords = []
+            missing_keywords = []
+            response_lower = bot_reply_clean.lower()
+            
+            for keyword in validation_request.expected_keywords:
+                if keyword.lower() in response_lower:
+                    found_keywords.append(keyword)
+                else:
+                    missing_keywords.append(keyword)
+            
+            validation_results["validation_details"]["keywords"] = {
+                "found": found_keywords,
+                "missing": missing_keywords,
+                "valid": len(missing_keywords) == 0
+            }
+            
+            if len(missing_keywords) > 0:
+                validation_results["validation_passed"] = False
+        
+        # Check sentiment (basic implementation)
+        if validation_request.expected_sentiment:
+            positive_words = ["good", "great", "excellent", "helpful", "positive", "yes", "can", "will"]
+            negative_words = ["bad", "poor", "sorry", "cannot", "unfortunately", "no", "unable"]
+            
+            response_lower = bot_reply_clean.lower()
+            positive_count = sum(1 for word in positive_words if word in response_lower)
+            negative_count = sum(1 for word in negative_words if word in response_lower)
+            
+            if positive_count > negative_count:
+                detected_sentiment = "positive"
+            elif negative_count > positive_count:
+                detected_sentiment = "negative"
+            else:
+                detected_sentiment = "neutral"
+            
+            sentiment_valid = detected_sentiment == validation_request.expected_sentiment
+            
+            validation_results["validation_details"]["sentiment"] = {
+                "valid": sentiment_valid,
+                "expected": validation_request.expected_sentiment,
+                "detected": detected_sentiment
+            }
+            
+            if not sentiment_valid:
+                validation_results["validation_passed"] = False
+        
+        return validation_results
+        
+    except Exception as e:
+        print(f"[ERROR] Bot validation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Bot validation failed: {str(e)}"
+        )
+
+
+@app.get("/admin/bot/test-history")
+async def get_test_history(
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db_session),
+    limit: int = 50,
+    offset: int = 0
+):
+    """Admin endpoint to retrieve bot test history"""
+    try:
+        # For now, return a simple structure. In a real implementation,
+        # you'd store test results in the database
+        return {
+            "message": "Test history endpoint ready for database integration",
+            "limit": limit,
+            "offset": offset,
+            "total_tests": 0,
+            "tests": []
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to retrieve test history: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve test history: {str(e)}"
+        )
+
+
+# -----------------------------------------------------------------------------
 # Debug Chat (uses same prompt builder)
 # -----------------------------------------------------------------------------
 @app.post("/debug/chat")
@@ -489,7 +808,11 @@ async def debug_chat(req: ChatRequest):
 # Agent chat + session mgmt (unchanged behavior)
 # -----------------------------------------------------------------------------
 @app.post("/agent-chat")
-async def agent_chat(req: HumanAgentRequest):
+async def agent_chat(
+    req: HumanAgentRequest,
+    current_user: User = Depends(require_role(["admin", "employee"])),
+    db: Session = Depends(get_db_session)
+):
     session_id = req.session_id
     agent_id = req.agent_id
     agent_message = (req.message or "").strip()
@@ -519,7 +842,11 @@ async def agent_chat(req: HumanAgentRequest):
 
 
 @app.post("/agent/sessions/{agent_id}/take")
-async def take_session(agent_id: str):
+async def take_session(
+    agent_id: str,
+    current_user: User = Depends(require_role(["admin", "employee"])),
+    db: Session = Depends(get_db_session)
+):
     if agent_id not in human_agent_sessions:
         return JSONResponse({"status": "error","message": "Agent session not found"}, status_code=404)
     human_agent_sessions[agent_id]["status"] = "active"
@@ -581,7 +908,7 @@ async def get_session_summary(session_id: str):
 
 
 @app.get("/agent/sessions")
-async def get_escalated_sessions(current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db_session)):
+async def get_escalated_sessions(current_user: User = Depends(require_role(["admin", "employee"])), db: Session = Depends(get_db_session)):
     escalated_sessions = []
     for aid, session_data in human_agent_sessions.items():
         if session_data["status"] == "waiting":
@@ -782,7 +1109,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 user_msg = {"role": "user", "content": user_message, "timestamp": datetime.now().isoformat()}
                 session["history"].append(user_msg)
 
-                # if already escalated, just pass through to agent
+                # if already escalated, just pass through to agent without repeating notices
                 if session.get("escalated"):
                     agent_id = session.get("agent_id")
                     if agent_id and agent_id in human_agent_sessions:
@@ -793,19 +1120,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                             "timestamp": datetime.now().isoformat()
                         }
                         await manager.broadcast_to_agent(json.dumps(agent_message), agent_id)
-                        await manager.send_personal_message(json.dumps({
-                            "type": "bot_message",
-                            "message": "Your message has been sent to the human agent. They will respond shortly.",
-                            "escalated": True,
-                            "agent_id": agent_id
-                        }), connection_id)
-                    else:
-                        await manager.send_personal_message(json.dumps({
-                            "type": "bot_message",
-                            "message": "This conversation has been escalated to a human agent. Please wait for their response.",
-                            "escalated": True,
-                            "agent_id": session.get("agent_id")
-                        }), connection_id)
+                    # Do not send repetitive bot notices to the customer
                     continue
 
                 # RAG
@@ -880,12 +1195,26 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                     session["history"].append(bot_msg)
                     session["confidence_scores"].append(confidence)
 
+                    # send bot reply to the customer widget
                     await manager.send_personal_message(json.dumps({
                         "type": "bot_message",
                         "message": bot_reply_clean,
                         "escalated": False,
-                        "confidence_score": confidence
+                        "confidence_score": confidence,
+                        "timestamp": bot_msg["timestamp"]
                     }), connection_id)
+
+            elif message_data["type"] == "typing":
+                # forward typing indicator from customer to agent if escalated
+                if session_id in chat_sessions and chat_sessions[session_id].get("escalated"):
+                    agent_id = chat_sessions[session_id].get("agent_id")
+                    if agent_id and agent_id in human_agent_sessions:
+                        await manager.broadcast_to_agent(json.dumps({
+                            "type": "user_typing",
+                            "session_id": session_id,
+                            "timestamp": datetime.now().isoformat()
+                        }), agent_id)
+                # removed incorrect bot response send here
 
     except WebSocketDisconnect:
         manager.disconnect(connection_id)
@@ -981,6 +1310,20 @@ async def websocket_agent(websocket: WebSocket, agent_id: str):
                     "message": user_message,
                     "timestamp": message_data.get("timestamp", datetime.now().isoformat())
                 }), connection_id)
+
+            elif message_data["type"] == "typing":
+                # Agent typing indicator → forward to session
+                # Determine session_id from message (preferred) or agent_session
+                session_id = message_data.get("session_id")
+                if not session_id and agent_id in human_agent_sessions:
+                    session_id = human_agent_sessions[agent_id].get("session_id")
+                if not session_id:
+                    continue
+                await manager.broadcast_to_session(json.dumps({
+                    "type": "agent_typing",
+                    "session_id": session_id,
+                    "timestamp": datetime.now().isoformat()
+                }), session_id)
 
     except WebSocketDisconnect:
         manager.disconnect(connection_id)

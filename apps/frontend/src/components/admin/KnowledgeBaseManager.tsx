@@ -21,7 +21,19 @@ export default function KnowledgeBaseManager() {
     const [updating, setUpdating] = useState(false)
     const [uploading, setUploading] = useState(false)
     const [crawling, setCrawling] = useState(false)
-    const [crawlStatus, setCrawlStatus] = useState<any>(null)
+    const [crawlStatus, setCrawlStatus] = useState<{
+        website_url?: string;
+        last_scraped_hash?: string | null;
+        total_documents?: number;
+        sources?: Record<string, number>;
+        vector_db_path?: string;
+        crawl_config?: {
+            max_pages: number;
+            delay_seconds: number;
+            allow_subdomains: boolean;
+            user_agent: string;
+        };
+    } | null>(null)
     const [error, setError] = useState<string>()
     const [success, setSuccess] = useState<string>()
     const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -416,22 +428,22 @@ export default function KnowledgeBaseManager() {
                             <div className="space-y-2 text-sm">
                                 <div className="flex justify-between">
                                     <span className="text-gray-600">Max Pages:</span>
-                                    <span className="font-semibold text-gray-800">{crawlStatus.crawl_config.max_pages}</span>
+                                    <span className="font-semibold text-gray-800">{crawlStatus.crawl_config?.max_pages}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-600">Delay:</span>
-                                    <span className="font-semibold text-gray-800">{crawlStatus.crawl_config.delay_seconds}s</span>
+                                    <span className="font-semibold text-gray-800">{crawlStatus.crawl_config?.delay_seconds}s</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-600">Subdomains:</span>
                                     <span className="font-semibold text-gray-800">
-                                        {crawlStatus.crawl_config.allow_subdomains ? 'Allowed' : 'Blocked'}
+                                        {crawlStatus.crawl_config?.allow_subdomains ? 'Allowed' : 'Blocked'}
                                     </span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-600">User Agent:</span>
                                     <span className="font-mono text-gray-800 text-xs">
-                                        {crawlStatus.crawl_config.user_agent}
+                                        {crawlStatus.crawl_config?.user_agent}
                                     </span>
                                 </div>
                             </div>

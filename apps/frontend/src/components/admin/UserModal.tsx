@@ -211,7 +211,7 @@ export default function UserModal({ isOpen, onClose, user, onSave, mode }: UserM
                         <div className="flex items-center justify-between">
                             <div>
                                 <label className="text-sm font-medium text-gray-700">Email Verified</label>
-                                <p className="text-xs text-gray-500">User's email has been verified</p>
+                                <p className="text-xs text-gray-500">User&apos;s email has been verified</p>
                             </div>
                             <button
                                 type="button"

@@ -14,7 +14,7 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({ initialSessionId }: ChatWindowProps) {
-  const [sessionId, setSessionId] = useState(initialSessionId || generateSessionId())
+  const [sessionId] = useState(initialSessionId || generateSessionId())
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isEscalated, setIsEscalated] = useState(false)

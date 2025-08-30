@@ -1,5 +1,4 @@
 // app/layout.tsx
-import { SiteChrome } from '@/components/SiteChrome';
 import { AuthProvider } from '@/lib/auth';
 import './globals.css';
 
@@ -8,7 +7,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <AuthProvider>
-          <SiteChrome>{children}</SiteChrome>
+          {children}
         </AuthProvider>
       </body>
     </html>

@@ -102,10 +102,16 @@ def get_current_active_user(current_user: User = Depends(get_current_user)) -> U
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
-def require_role(required_role: str):
-    """Dependency to require a specific role"""
+def require_role(required_roles):
+    """Dependency to require specific role(s) - can be a single role or list of roles"""
     def role_checker(current_user: User = Depends(get_current_active_user)):
-        if current_user.role != required_role:
+        # Convert single role to list for consistent handling
+        if isinstance(required_roles, str):
+            allowed_roles = [required_roles]
+        else:
+            allowed_roles = required_roles
+            
+        if current_user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough permissions"
