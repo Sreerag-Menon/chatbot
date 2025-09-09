@@ -1,50 +1,46 @@
-# Core data/ML & apps
-numpy
-pandas
-scikit-learn
-streamlit
+# Web framework & server (essential)
+fastapi
+uvicorn[standard]
 
-# APIs & LLM tooling
-groq
-openai
-langchain
+# Database ORM & driver
+SQLAlchemy==2.0.31
+psycopg2-binary>=2.9,<3    # PostgreSQL driver for production
+pydantic[email]
+
+# Auth & security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+
+# Core dependencies
+requests
+python-dotenv==1.0.1
+websockets
+
+# Minimal ML stack (CPU-only, memory optimized)
+torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers --no-deps
+transformers --no-deps
+numpy
+chromadb --no-deps
+
+# LangChain (minimal set)
 langchain-core
 langchain-groq
 langchain-chroma
 langchain-text-splitters
 langchain-huggingface
-chromadb
-sentence-transformers
 
-# Web framework & server
-fastapi
-uvicorn
-
-# HTTP & parsing
-requests
+# Web scraping (lightweight)
 beautifulsoup4
 lxml
 trafilatura
 
-# Env
-python-dotenv==1.0.1
-
-# Realtime / sockets
-websockets
-
-# Database ORM & driver
-SQLAlchemy==2.0.31
-pydantic[email]
-psycopg[binary]>=3.2,<4    # PostgreSQL driver (v3) – no compiler needed on 3.13
-psycopg2-binary>=2.9,<3    # Needed because DATABASE_URL uses postgresql+psycopg2
-
-# Auth & uploads
-passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.3.0
-python-multipart==0.0.6
-
 # Files & documents
 pdfplumber
 
-# Validation extras used by Pydantic EmailStr
+# APIs
+groq
+
+# Validation
 email-validator
