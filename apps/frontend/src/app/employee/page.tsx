@@ -6,10 +6,12 @@ import { chatAPI } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import type { EscalatedSession } from '@/lib/types'
 import { Activity, AlertTriangle, Clock, MessageSquare, TrendingUp, User, Users, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
 export default function EmployeePage() {
     const { user } = useAuth()
+    const router = useRouter()
     const [escalatedSessions, setEscalatedSessions] = useState<EscalatedSession[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string>()
@@ -37,7 +39,9 @@ export default function EmployeePage() {
 
     useEffect(() => {
         fetchEscalatedSessions()
-        const interval = setInterval(fetchEscalatedSessions, 30000)
+        const interval = setInterval(() => {
+            fetchEscalatedSessions()
+        }, 30000)
         return () => clearInterval(interval)
     }, [fetchEscalatedSessions])
 
@@ -106,6 +110,12 @@ export default function EmployeePage() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-4">
+                                    <button
+                                        onClick={() => router.push('/employee/sessions')}
+                                        className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-medium rounded-lg hover:scale-105 transition-transform"
+                                    >
+                                        All Sessions
+                                    </button>
                                     <div className="bg-white/10 backdrop-blur-xl rounded-xl border border-white/20 px-4 py-2">
                                         <div className="text-center">
                                             <div className="text-2xl font-bold text-white">{escalatedSessions.length}</div>

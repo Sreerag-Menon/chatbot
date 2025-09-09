@@ -7,7 +7,7 @@ from typing import Optional, List, Dict
 import os
 import re
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import uuid
 
@@ -32,9 +32,30 @@ load_dotenv()
 # App & CORS
 # -----------------------------------------------------------------------------
 app = FastAPI()
+
+# Configure CORS for local dev, Netlify previews, and production via env
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+env_origins = os.getenv("ALLOW_ORIGINS", "").strip()
+allow_origins = [o.strip() for o in env_origins.split(",") if o.strip()] if env_origins else []
+
+# Convenience single-origin envs
+frontend_origin = os.getenv("FRONTEND_ORIGIN")
+netlify_url = os.getenv("NETLIFY_SITE_URL")  # e.g. https://your-site.netlify.app
+render_frontend_url = os.getenv("RENDER_FRONTEND_URL")
+for o in [frontend_origin, netlify_url, render_frontend_url]:
+    if o and o not in allow_origins:
+        allow_origins.append(o)
+
+allow_origin_regex = os.getenv("ALLOW_ORIGIN_REGEX")  # e.g. https?://.*\.netlify\.app$
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=(allow_origins or default_origins),
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,6 +82,10 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.session_connections: Dict[str, str] = {}
         self.agent_connections: Dict[str, str] = {}
+        # watchers that observe a session (admins/employees viewing chat without intervening)
+        self.session_watchers: Dict[str, set] = {}
+        # reverse lookup to clean up on disconnect
+        self.connection_watches_session: Dict[str, str] = {}
 
     async def connect(self, websocket: WebSocket, connection_id: str):
         await websocket.accept()
@@ -73,10 +98,12 @@ class ConnectionManager:
         # reverse lookups
         session_id = None
         agent_id = None
+        # session client
         for sid, cid in self.session_connections.items():
             if cid == connection_id:
                 session_id = sid
                 break
+        # agent client
         for aid, cid in self.agent_connections.items():
             if cid == connection_id:
                 agent_id = aid
@@ -87,25 +114,45 @@ class ConnectionManager:
         if agent_id:
             del self.agent_connections[agent_id]
 
+        # remove from watchers if present
+        watched_session = self.connection_watches_session.get(connection_id)
+        if watched_session:
+            watchers = self.session_watchers.get(watched_session)
+            if watchers and connection_id in watchers:
+                watchers.discard(connection_id)
+            self.connection_watches_session.pop(connection_id, None)
+
     async def send_personal_message(self, message: str, connection_id: str):
         if connection_id in self.active_connections:
             await self.active_connections[connection_id].send_text(message)
 
     async def broadcast_to_session(self, message: str, session_id: str):
+        # primary customer connection
         if session_id in self.session_connections:
             connection_id = self.session_connections[session_id]
             await self.send_personal_message(message, connection_id)
+        # any watchers observing this session
+        for cid in list(self.session_watchers.get(session_id, set())):
+            await self.send_personal_message(message, cid)
 
     async def broadcast_to_agent(self, message: str, agent_id: str):
         if agent_id in self.agent_connections:
             connection_id = self.agent_connections[agent_id]
             await self.send_personal_message(message, connection_id)
 
+    async def broadcast_to_watchers(self, message: str, session_id: str):
+        for cid in list(self.session_watchers.get(session_id, set())):
+            await self.send_personal_message(message, cid)
+
 manager = ConnectionManager()
 
 # -----------------------------------------------------------------------------
 # Auth endpoints (unchanged behavior)
 # -----------------------------------------------------------------------------
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 @app.post("/auth/signup", response_model=UserResponse)
 async def signup(user_data: SignupRequest, db: Session = Depends(get_db_session)):
     if user_data.role == "admin":
@@ -140,7 +187,7 @@ async def login(login_data: LoginRequest, db: Session = Depends(get_db_session))
     if user.role != login_data.role:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role mismatch")
 
-    access_token = create_access_token(data={"sub": user.email})
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(days=7))
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 
@@ -920,6 +967,39 @@ async def get_escalated_sessions(current_user: User = Depends(require_role(["adm
             })
     return JSONResponse({"escalated_sessions": escalated_sessions,"total_waiting": len(escalated_sessions)})
 
+# New: list all chat sessions (bot + user messages)
+@app.get("/sessions")
+async def list_all_sessions(current_user: User = Depends(require_role(["admin", "employee"]))):
+    out = []
+    for sid, sess in chat_sessions.items():
+        out.append({
+            "session_id": sid,
+            "escalated": sess.get("escalated", False),
+            "agent_id": sess.get("agent_id"),
+            "escalated_at": sess.get("escalated_at"),
+            "message_count": len(sess.get("history", [])),
+        })
+    return JSONResponse({"sessions": out})
+
+# New: escalate by session_id so an employee/admin can intervene
+@app.post("/agent/sessions/{session_id}/escalate")
+async def escalate_session(session_id: str, current_user: User = Depends(require_role(["admin", "employee"])), db: Session = Depends(get_db_session)):
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = {
+            "history": [],
+            "escalated": False,
+            "agent_id": None,
+            "escalated_at": None,
+            "confidence_scores": [],
+            "low_confidence_streak": 0,
+        }
+    session = chat_sessions[session_id]
+    if session.get("escalated"):
+        return JSONResponse({"status": "already_escalated", "message": "Session already escalated", "agent_id": session.get("agent_id"), "session_id": session_id})
+
+    agent_id = escalate_to_human(session_id, session)
+    return JSONResponse({"status": "success", "message": "Session escalated", "agent_id": agent_id, "session_id": session_id})
+
 
 # -----------------------------------------------------------------------------
 # Knowledge base admin endpoints
@@ -1075,15 +1155,25 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         manager.session_connections[session_id] = connection_id
         print(f"[WS] Customer connected to session {session_id}")
 
-        if session_id in chat_sessions:
-            session = chat_sessions[session_id]
-            status_message = {
-                "type": "session_status",
-                "escalated": session.get("escalated", False),
-                "agent_id": session.get("agent_id"),
-                "message_count": len(session.get("history", []))
+        # Ensure session is initialized immediately on connect
+        if session_id not in chat_sessions:
+            chat_sessions[session_id] = {
+                "history": [],
+                "escalated": False,
+                "agent_id": None,
+                "escalated_at": None,
+                "confidence_scores": [],
+                "low_confidence_streak": 0,
             }
-            await manager.send_personal_message(json.dumps(status_message), connection_id)
+
+        session = chat_sessions[session_id]
+        status_message = {
+            "type": "session_status",
+            "escalated": session.get("escalated", False),
+            "agent_id": session.get("agent_id"),
+            "message_count": len(session.get("history", []))
+        }
+        await manager.send_personal_message(json.dumps(status_message), connection_id)
 
         while True:
             data = await websocket.receive_text()
@@ -1108,6 +1198,13 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 # append user message
                 user_msg = {"role": "user", "content": user_message, "timestamp": datetime.now().isoformat()}
                 session["history"].append(user_msg)
+                # mirror to watchers immediately
+                await manager.broadcast_to_watchers(json.dumps({
+                    "type": "user_message",
+                    "session_id": session_id,
+                    "message": user_message,
+                    "timestamp": user_msg["timestamp"]
+                }), session_id)
 
                 # if already escalated, just pass through to agent without repeating notices
                 if session.get("escalated"):
@@ -1175,7 +1272,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                         "agent_id": agent_id,
                         "confidence_score": confidence
                     }
-                    await manager.send_personal_message(json.dumps(out), connection_id)
+                    await manager.broadcast_to_session(json.dumps(out), session_id)
 
                     # notify agent
                     await manager.broadcast_to_agent(json.dumps({
@@ -1195,14 +1292,14 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                     session["history"].append(bot_msg)
                     session["confidence_scores"].append(confidence)
 
-                    # send bot reply to the customer widget
-                    await manager.send_personal_message(json.dumps({
+                    # send bot reply to the customer widget and watchers
+                    await manager.broadcast_to_session(json.dumps({
                         "type": "bot_message",
                         "message": bot_reply_clean,
                         "escalated": False,
                         "confidence_score": confidence,
                         "timestamp": bot_msg["timestamp"]
-                    }), connection_id)
+                    }), session_id)
 
             elif message_data["type"] == "typing":
                 # forward typing indicator from customer to agent if escalated
@@ -1215,10 +1312,63 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                             "timestamp": datetime.now().isoformat()
                         }), agent_id)
                 # removed incorrect bot response send here
+                # also reflect typing to watchers (optional UX)
+                await manager.broadcast_to_watchers(json.dumps({
+                    "type": "user_typing",
+                    "session_id": session_id,
+                    "timestamp": datetime.now().isoformat()
+                }), session_id)
 
     except WebSocketDisconnect:
         manager.disconnect(connection_id)
         print(f"[WS] Customer disconnected from session {session_id}")
+
+
+@app.websocket("/ws/watch/{session_id}")
+async def websocket_watch_session(websocket: WebSocket, session_id: str):
+    """Allow admins/employees to passively watch a session in real time without intervening.
+    They receive all bot and agent messages broadcast to the session.
+    """
+    connection_id = f"watch_{session_id}_{uuid.uuid4().hex[:8]}"
+    try:
+        await manager.connect(websocket, connection_id)
+        watchers = manager.session_watchers.setdefault(session_id, set())
+        watchers.add(connection_id)
+        manager.connection_watches_session[connection_id] = session_id
+        print(f"[WS] Watcher connected for session {session_id}")
+
+        # On connect, send current session status
+        if session_id not in chat_sessions:
+            chat_sessions[session_id] = {
+                "history": [],
+                "escalated": False,
+                "agent_id": None,
+                "escalated_at": None,
+                "confidence_scores": [],
+                "low_confidence_streak": 0,
+            }
+        session = chat_sessions[session_id]
+        await manager.send_personal_message(json.dumps({
+            "type": "session_status",
+            "escalated": session.get("escalated", False),
+            "agent_id": session.get("agent_id"),
+            "message_count": len(session.get("history", []))
+        }), connection_id)
+
+        # Also send existing history so the viewer has context
+        await manager.send_personal_message(json.dumps({
+            "type": "history_snapshot",
+            "session_id": session_id,
+            "history": session.get("history", [])
+        }), connection_id)
+
+        # Keep the connection open; viewers don't send messages
+        while True:
+            # keepalive: will close on disconnect
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(connection_id)
+        print(f"[WS] Watcher disconnected from session {session_id}")
 
 
 @app.websocket("/ws/agent/{agent_id}")
@@ -1278,6 +1428,7 @@ async def websocket_agent(websocket: WebSocket, agent_id: str):
                         "timestamp": datetime.now().isoformat()
                     })
 
+                # deliver to customer and watchers
                 await manager.broadcast_to_session(json.dumps({
                     "type": "agent_message",
                     "message": agent_message,

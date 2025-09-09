@@ -24,6 +24,7 @@ import {
   User,
   Users
 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
 type TabType = 'overview' | 'sessions' | 'users' | 'knowledge' | 'analytics' | 'bot-testing'
@@ -37,7 +38,7 @@ interface TabConfig {
 
 const tabs: TabConfig[] = [
   { id: 'overview', label: 'Overview', icon: Home, description: 'System overview and key metrics' },
-  { id: 'sessions', label: 'Sessions', icon: MessageSquare, description: 'Manage escalated chat sessions' },
+  { id: 'sessions', label: 'Escalated Sessions', icon: MessageSquare, description: 'Manage escalated chat sessions' },
   { id: 'users', label: 'Users', icon: Users, description: 'Manage system users and permissions' },
   { id: 'knowledge', label: 'Knowledge Base', icon: Database, description: 'Manage content and documents' },
   { id: 'analytics', label: 'Analytics', icon: TrendingUp, description: 'Detailed analytics and reports' },
@@ -46,6 +47,7 @@ const tabs: TabConfig[] = [
 
 export default function AdminPage() {
   const { logout } = useAuth()
+  const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [users, setUsers] = useState<UserResponse[]>([])
@@ -83,6 +85,7 @@ export default function AdminPage() {
   const [activeChat, setActiveChat] = useState<{ sessionId: string; agentId: string } | null>(null)
   const [sessionSummaries, setSessionSummaries] = useState<Record<string, string>>({})
   const [summariesLoaded, setSummariesLoaded] = useState(false)
+  const [allSessions, setAllSessions] = useState<Array<{ session_id: string; escalated: boolean; agent_id?: string; escalated_at?: string; message_count: number }>>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [filterRole, setFilterRole] = useState<string>('all')
   const [userModalOpen, setUserModalOpen] = useState(false)
@@ -120,6 +123,17 @@ export default function AdminPage() {
     }
   }, [summariesLoaded])
 
+  const fetchAllSessions = useCallback(async () => {
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('chatbot_auth_token') : null
+      if (!token) return
+      const res = await chatAPI.getAllSessions()
+      setAllSessions(res.sessions || [])
+    } catch (err) {
+      console.error('Error fetching all sessions:', err)
+    }
+  }, [])
+
   const fetchUsers = useCallback(async () => {
     try {
       const response = await chatAPI.getUsers()
@@ -134,12 +148,16 @@ export default function AdminPage() {
       const token = typeof window !== 'undefined' ? localStorage.getItem('chatbot_auth_token') : null
       if (!token) return
       fetchEscalatedSessions()
-      const interval = setInterval(fetchEscalatedSessions, 30000)
+      fetchAllSessions()
+      const interval = setInterval(() => {
+        fetchEscalatedSessions()
+        fetchAllSessions()
+      }, 30000)
       return () => clearInterval(interval)
     } else if (activeTab === 'users') {
       fetchUsers()
     }
-  }, [activeTab, fetchEscalatedSessions, fetchUsers])
+  }, [activeTab, fetchEscalatedSessions, fetchAllSessions, fetchUsers])
 
   const handleTakeSession = async (session: EscalatedSession) => {
     if (session.session_id) {
@@ -154,6 +172,20 @@ export default function AdminPage() {
         console.error('Error taking session:', err)
         // setError('Failed to take session') // This line was removed
       }
+    }
+  }
+
+  const handleIntervene = async (sessionId: string) => {
+    try {
+      const res = await chatAPI.escalateSession(sessionId)
+      if (res.agent_id) {
+        await chatAPI.takeSession(res.agent_id)
+        setActiveChat({ sessionId, agentId: res.agent_id })
+      }
+      fetchEscalatedSessions()
+      fetchAllSessions()
+    } catch (err) {
+      console.error('Error intervening session:', err)
     }
   }
 
@@ -791,6 +823,21 @@ export default function AdminPage() {
                     </button>
                   )
                 })}
+
+                {/* All Sessions Link */}
+                <button
+                  onClick={() => router.push('/admin/sessions')}
+                  className="w-full flex items-center gap-3 px-3 py-3 text-white/70 hover:text-white hover:bg-white/10 rounded-xl transition-all"
+                  title={sidebarCollapsed ? "All Sessions" : undefined}
+                >
+                  <MessageSquare className="w-5 h-5 flex-shrink-0" />
+                  {!sidebarCollapsed && (
+                    <div className="text-left">
+                      <div className="font-medium">All Sessions</div>
+                      <div className="text-xs opacity-70">View and manage all chat sessions</div>
+                    </div>
+                  )}
+                </button>
               </nav>
 
               {/* Logout Section */}

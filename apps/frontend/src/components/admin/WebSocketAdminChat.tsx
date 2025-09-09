@@ -9,6 +9,8 @@ interface WebSocketAdminChatProps {
     sessionId: string
     agentId: string
     onClose: () => void
+    onIntervene?: () => void
+    showInterveneButton?: boolean
 }
 
 interface HistoryEntry {
@@ -17,7 +19,7 @@ interface HistoryEntry {
     timestamp: string
 }
 
-export function WebSocketAdminChat({ sessionId, agentId }: WebSocketAdminChatProps) {
+export function WebSocketAdminChat({ sessionId, agentId, onIntervene, showInterveneButton = false }: WebSocketAdminChatProps) {
     const [messages, setMessages] = useState<Message[]>([])
     const [inputMessage, setInputMessage] = useState('')
     const [isLoading, setIsLoading] = useState(false)
@@ -70,7 +72,7 @@ export function WebSocketAdminChat({ sessionId, agentId }: WebSocketAdminChatPro
     // Initialize WebSocket connection for agent
     useEffect(() => {
         const base = process.env.NEXT_PUBLIC_BACKEND_WS_URL
-        const httpBase = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL
+        const httpBase = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL || process.env.NEXT_PUBLIC_API_URL
         let wsUrl = ''
         if (base) {
             wsUrl = base.replace(/\/$/, '') + `/ws/agent/${agentId}`
@@ -111,6 +113,15 @@ export function WebSocketAdminChat({ sessionId, agentId }: WebSocketAdminChatPro
                         break
                     }
                     case 'bot_response': {
+                        const botMessage: Message = {
+                            role: 'assistant',
+                            content: data.message,
+                            timestamp: data.timestamp,
+                        }
+                        setMessages(prev => [...prev, botMessage])
+                        break
+                    }
+                    case 'bot_message': {
                         const botMessage: Message = {
                             role: 'assistant',
                             content: data.message,
@@ -250,6 +261,14 @@ export function WebSocketAdminChat({ sessionId, agentId }: WebSocketAdminChatPro
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
+                    {showInterveneButton && onIntervene && (
+                        <button
+                            onClick={onIntervene}
+                            className="px-3 py-1.5 bg-gradient-to-r from-red-500 to-orange-500 text-white text-sm font-medium rounded-lg hover:scale-105 transition-transform"
+                        >
+                            Intervene
+                        </button>
+                    )}
                     {isUserTyping && (
                         <div className="text-xs text-white/80">Customer is typing…</div>
                     )}

@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: chatbot-backend
+    env: docker
+    plan: free
+    healthCheckPath: /health
+    dockerfilePath: apps/backend/Dockerfile
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama3-8b-8192
+      - key: WEBSITE_URL
+        value: https://www.supportsages.com
+      - key: ALLOW_ORIGINS
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+

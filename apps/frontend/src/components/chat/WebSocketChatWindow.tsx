@@ -51,7 +51,7 @@ export function WebSocketChatWindow({ initialSessionId }: WebSocketChatWindowPro
         console.log('Connecting to WebSocket with session ID:', sessionId)
 
         const base = process.env.NEXT_PUBLIC_BACKEND_WS_URL
-        const httpBase = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL
+        const httpBase = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL || process.env.NEXT_PUBLIC_API_URL
         let wsUrl = ''
         if (base) {
             wsUrl = base.replace(/\/$/, '') + `/ws/session/${sessionId}`

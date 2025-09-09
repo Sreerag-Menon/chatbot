@@ -1,0 +1,15 @@
+[build]
+  base = "apps/frontend"
+  command = "npm ci && npm run build"
+  publish = ".next"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[build.environment]
+  NEXT_TELEMETRY_DISABLED = "1"
+  NODE_VERSION = "20"
+
