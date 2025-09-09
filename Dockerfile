@@ -1,46 +1,37 @@
+# apps/backend/Dockerfile
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Set environment variables
+# Base env + make sure Python can import from /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app \
+    PORT=8000
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Minimal build deps + curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl \
+  && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Install deps
 COPY apps/backend/requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy app
 COPY apps/backend/ .
 
-# Create necessary directories
-RUN mkdir -p uploads db
+# Create runtime dirs (Render disk can be mounted at /data; app can still write to /app/uploads)
+RUN mkdir -p /app/uploads /data/chroma
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
-USER app
+# The port Render scans is $PORT; expose it for local runs
+EXPOSE ${PORT}
 
-# Expose port
-EXPOSE 8000
+# Healthcheck should also use $PORT
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:${PORT}/health || exit 1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-
+# Use shell form so ${PORT} expands; bind to 0.0.0.0
+CMD bash -lc "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
